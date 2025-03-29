@@ -18,9 +18,6 @@ class CARLA_Data(Dataset):
         self.dataframe = pd.read_csv(root + root_csv)
         self.root = root
         self.seq_len = config.seq_len
-        self.gps_data = []
-        self.pos_input_normalized = Normalize_loc(root, self.dataframe, angle_norm=config.angle_norm)
-        self.formatted_gps = self.format_cartesian_coordinates(self.pos_input_normalized.reshape(-1, 2))
         self.test = test
         self.add_velocity = config.add_velocity
         self.enhanced = config.enhanced
@@ -35,7 +32,6 @@ class CARLA_Data(Dataset):
         data = dict()
         data['fronts'] = []
         data['radars'] = []
-        data['gps'] = self.pos_input_normalized[index, :, :]
         data['scenario'] = []
         data['loss_weight'] = []
 
@@ -115,83 +111,3 @@ class CARLA_Data(Dataset):
             data['beamidx'].append(beamidx)
 
         return data
-
-    def format_cartesian_coordinates(self, cartesian_coordinates):
-        """
-        Formats Cartesian coordinates as descriptive text for CLIP.
-        """
-        formatted_coordinates = []
-        for x, y in cartesian_coordinates:
-            formatted_coordinates.append(f"The vehicle is located at X coordinate: {x:.2f}, Y coordinate: {y:.2f}.")
-        return formatted_coordinates
-
-
-def xy_from_latlong(lat_long):
-    """
-    Requires lat and long, in decimal degrees, in the 1st and 2nd columns.
-    Returns same row vec/matrix on cartesian (XY) coords.
-    """
-    # utm.from_latlon() returns: (EASTING, NORTHING, ZONE_NUMBER, ZONE_LETTER)
-    x, y, *_ = utm.from_latlon(lat_long[:, 0], lat_long[:, 1])
-    return np.stack((x, y), axis=1)
-
-
-def Normalize_loc(root, dataframe, angle_norm):
-    n_samples = dataframe.index.stop
-    pos1_rel_paths = dataframe['unit2_loc_1'].values
-    pos2_rel_paths = dataframe['unit2_loc_2'].values
-    pos_bs_rel_paths = dataframe['unit1_loc'].values
-    pos1_abs_paths = [os.path.join(root, path[2:]) for path in pos1_rel_paths]
-    pos2_abs_paths = [os.path.join(root, path[2:]) for path in pos2_rel_paths]
-    pos_bs_abs_paths = [os.path.join(root, path[2:]) for path in pos_bs_rel_paths]
-    pos_input = np.zeros((n_samples, 2, 2))
-    pos_bs = np.zeros((n_samples, 2))
-    for sample_idx in tqdm(range(n_samples)):
-        # unit2 (UE) positions
-        pos_input[sample_idx, 0, :] = np.loadtxt(pos1_abs_paths[sample_idx])
-        pos_input[sample_idx, 1, :] = np.loadtxt(pos2_abs_paths[sample_idx])
-        # unit1 (BS) position
-        pos_bs[sample_idx] = np.loadtxt(pos_bs_abs_paths[sample_idx])
-    pos_ue_stacked = np.vstack((pos_input[:, 0, :], pos_input[:, 1, :]))
-    pos_bs_stacked = np.vstack((pos_bs, pos_bs))
-    pos_ue_stacked = np.vstack((pos_input[:, 0, :], pos_input[:, 1, :]))
-    pos_bs_stacked = np.vstack((pos_bs, pos_bs))
-
-    pos_ue_cart = xy_from_latlong(pos_ue_stacked)
-    pos_bs_cart = xy_from_latlong(pos_bs_stacked)
-
-    pos_diff = pos_ue_cart - pos_bs_cart
-
-    # pos_min = np.min(pos_diff, axis=0)
-    # pos_max = np.max(pos_diff, axis=0)
-    pos_max = np.array([40.20955233, 52.31386139])
-    pos_min = np.array([-7.18029715, -97.55563452])
-
-    # Normalize and unstack
-    pos_stacked_normalized = (pos_diff - pos_min) / (pos_max - pos_min)
-    if angle_norm:
-        pos_stacked_normalized = normalize(pos_diff, axis=1)
-
-    pos_input_normalized = np.zeros((n_samples, 2, 2))
-    pos_input_normalized[:, 0, :] = pos_stacked_normalized[:n_samples]
-    pos_input_normalized[:, 1, :] = pos_stacked_normalized[n_samples:]
-    if angle_norm:
-        angle = np.arctan(pos_input_normalized[..., 1] / pos_input_normalized[..., 0]) / np.pi * 180
-        for sample_idx in tqdm(range(n_samples)):
-            if 'scenario31' in pos_bs_abs_paths[sample_idx]:
-                angle[sample_idx] -= -50.52  # -40.94#
-            if 'scenario32' in pos_bs_abs_paths[sample_idx]:
-                angle[sample_idx] -= 44.8  # 39.61#
-            if 'scenario33' in pos_bs_abs_paths[sample_idx]:
-                angle[sample_idx] -= 55.6  # 47.85#
-            if 'scenario34' in pos_bs_abs_paths[sample_idx]:
-                angle[sample_idx] -= -60  # -59.363#
-        idx = angle > 90
-        angle[idx] -= 180
-        idx = angle < -90
-        angle[idx] += 180
-        pos_input_normalized[:, 0, 1] = angle[:, 0] / 180 * np.pi
-        pos_input_normalized[:, 0, 0] = angle[:, 0] / 180 * np.pi
-        pos_input_normalized[:, 1, 1] = angle[:, 1] / 180 * np.pi
-        pos_input_normalized[:, 1, 0] = angle[:, 1] / 180 * np.pi
-    return pos_input_normalized
