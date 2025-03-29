@@ -1,7 +1,5 @@
 # CMDF
 
-# README
-
 ## Dataset
 
 *To be updated.*
